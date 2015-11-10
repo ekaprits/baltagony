@@ -1,4 +1,4 @@
-#!/usr/bin/python           # This is server.py file
+#!/usr/bin/python
 
 import sys, socket
 from random import shuffle
@@ -21,16 +21,17 @@ def main(argv):
     for i in range(numPlayers):
         hands.append([])
         for j in range(initHandSize):
-            hands[i].append(deck[0])
-            deck = deck[1:]
+            card, deck = drawCardFromDeck(deck)
+            hands[i].append(card)
 
     #deal initial discard
-    discard = [deck[0]]
-    deck = deck[1:]
+    card, deck = drawCardFromDeck(deck)
+    discard = [card]
     
     print hands
     print deck
     print discard
+    
     '''
     # Commenting all network connections for now
     
@@ -46,6 +47,11 @@ def main(argv):
         #c.send('Thank you for connecting')
         #c.close()                # Close the connection
     '''
+
+# naive implementation of draw.
+# TODO: if deck is empty, reshuffle discard pile into deck
+def drawCardFromDeck(deck):
+    return deck[0], deck[1:]
     
 if __name__ == "__main__":
     main(sys.argv)
