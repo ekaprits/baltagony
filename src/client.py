@@ -13,11 +13,15 @@ CARD_WIDTH = 71
 CARD_HEIGHT = 96
 DECK_DISCARD_GAP = 20
 CARD_GAP = 20
+MARGIN_GAP = 50
+PASS_BUTTON_GAP = 30
 hand_rect = pygame.Rect((0,0),(0,0))
 deck_rect = pygame.Rect((0,0),(0,0))
+pass_rect = pygame.Rect((WINDOW_WIDTH/2-30, MARGIN_GAP+CARD_HEIGHT+PASS_BUTTON_GAP), (60, 30))
+
 cTS = None
-client_timeout_connect = 5.0
-client_timeout_receive = 10.0
+client_timeout_connect = 50.0
+client_timeout_receive = 100.0
 
 class ClientTableState:
     def __init__(self, myIndex, numPlayers, deckSize, hands, discardPile, numDraws, activePlayer, activeSuit, seven_streak):
@@ -36,10 +40,14 @@ def readStateFromServer(client, blocking=True):
     state_string = client.receive(blocking)
     if state_string == None:
         return False
+    print "received: ", state_string
     state = json.loads(state_string)
     cTS = ClientTableState(state[0], state[1], state[2],
                             state[3], state[4], state[5],
                             state[6], state[7], state[8])
+    print "Just read state = ", state
+    print "cTS.activePlayer = ", cTS.activePlayer
+    print "cTS.myIndex = ", cTS.myIndex
     if (cTS.activePlayer == cTS.myIndex):
         pygame.display.set_caption("Baltagony (active)")
     else:
@@ -85,18 +93,41 @@ def main(argv):
                 pygame.quit()
                 sys.exit()
             elif event.type == MOUSEBUTTONUP:
+                if cTS.activePlayer != cTS.myIndex:
+                    print "Not active player, ignoring click"
+                    continue
                 pos = event.pos
                 print("Mouse click at position ", pos)
                 print deck_rect
                 if deck_rect.collidepoint(pos):
                     print "Clicked deck"
-                    lst = [0,0,0]
-                    send_string = json.dumps(lst)
-                    client.send(send_string)
-                    
+                    if cTS.numDraws[cTS.activePlayer] < 2:
+                        lst = [0,0,0]
+                        send_string = json.dumps(lst)
+                        client.send(send_string)
+                        readStateFromServer(client, True)
+                    else:
+                        print "You can't draw any more. You must play or pass"
+                elif pass_rect.collidepoint(pos):
+                    print "Clicked pass"
+                    if cTS.numDraws[cTS.activePlayer] == 2:
+                        lst = [1,0,0]
+                        send_string = json.dumps(lst)
+                        client.send(send_string)
+                        readStateFromServer(client, True)
+                    else:
+                        print "You can't pass yet."
                 elif hand_rect.collidepoint(pos):
                     print "Clicked hand"
-
+                    card_index = (pos[0]-hand_rect.left)/CARD_GAP
+                    if card_index > len(cTS.hands[cTS.activePlayer])-1:
+                        card_index = len(cTS.hands[cTS.activePlayer])-1
+                    card = cTS.hands[cTS.activePlayer][card_index]
+                    print "You drew index = ", card_index, " card = ", card
+                    lst = [2,card,0]
+                    send_string = json.dumps(lst)
+                    client.send(send_string)
+                    readStateFromServer(client, True)
         # print("Updating screen")
         draw(screen)
         existsNewState = False
@@ -107,7 +138,18 @@ def draw(screen):
     printAllHands(screen, cTS.hands, cTS.myIndex)
     printDiscardPile(screen, cTS.discardPile)
     printDeck(screen, cTS.deckSize)
+    printPassButton(screen)
+    if (cTS.activePlayer == cTS.myIndex):
+        pygame.display.set_caption("Baltagony (active)")
+    else:
+        pygame.display.set_caption("Baltagony (inactive)")
     pygame.display.update()
+
+def printPassButton(screen):
+    global pass_rect
+    gray = (200, 200, 200)
+    pygame.draw.rect(screen, gray, pass_rect, 0)
+    pygame.draw.rect(screen, (0,0,0), pass_rect, 1)
     
 def printDeck(screen, deckSize):
     global deck_rect
@@ -152,10 +194,11 @@ def printAllHands(screen, hands, myIndex):
             
 def printMyHand(screen, hand):
     global hand_rect
-    estimated_width = CARD_WIDTH + (len(hand)*CARD_GAP)
+    estimated_width = CARD_WIDTH + ((len(hand)-1)*CARD_GAP)
     init_x =(WINDOW_WIDTH-estimated_width)/2
     init_y = 50
-    hand_rect = pygame.Rect((init_x, init_y),(init_x+estimated_width,init_y+CARD_WIDTH))
+    hand_rect = pygame.Rect((init_x, init_y),(estimated_width,CARD_HEIGHT))
+    #pygame.draw.rect(screen, (0,0,0), hand_rect, 3)
     offset = 0
     for card in hand:
         imageFile = getFilenameFromCardNumber(card)

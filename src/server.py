@@ -15,7 +15,7 @@ tableState = None
 
 class Server(MastermindServerTCP):
     def __init__(self):
-        MastermindServerTCP.__init__(self, 0.5,0.5,10.0) #server refresh, connections' refresh, connection timeout
+        MastermindServerTCP.__init__(self, 0.5,0.5,100.0) #server refresh, connections' refresh, connection timeout
 
         #self.chat = [None]*scrollback
         self.mutex = threading.Lock()
@@ -35,10 +35,10 @@ class Server(MastermindServerTCP):
         return super(Server,self).callback_disconnect()
     def callback_connect_client   (self, connection_object                       ):
         global numConnections, connections, numPlayers, tableState
-        self.mutex.acquire()
-        if numConnections > numPlayers:
-            return
-        print "numConnections = ", numConnections
+        #self.mutex.acquire()
+        #if numConnections > numPlayers:
+        #    return super(Server,self).callback_connect_client(connection_object)
+        
         connections[numConnections] = connection_object
 
         print "Client connected. Active connections: ", numConnections
@@ -48,51 +48,49 @@ class Server(MastermindServerTCP):
         #connections[conn_index].socket.send([serialized_abstract_state])
         self.callback_client_send(connection_object, serialized_abstract_state)
         numConnections = numConnections + 1
-        if numConnections == numPlayers:
-            self.accepting_disallow()
+        #if numConnections == numPlayers:
+        #    self.accepting_disallow()
         
-        self.mutex.release()
+        #self.mutex.release()
         return super(Server,self).callback_connect_client(connection_object)
     def callback_disconnect_client(self, connection_object                       ):
         #Something could go here
         return super(Server,self).callback_disconnect_client(connection_object)
 
     def callback_client_receive   (self, connection_object                       ):
-        #Something could go here
+        #print "Received something from the client"
         return super(Server,self).callback_client_receive(connection_object)
     def callback_client_handle    (self, connection_object, data                 ):
+        global numConnections, connections, numPlayers, tableState
         action = json.loads(data)
-        print("Received player action ", action)
+        print "Received player action ", action
+        sending_player = connections.index(connection_object)
+        print "Sending player is ", sending_player
+        if sending_player != tableState.activePlayer:
+            print "Not the active player. Ignoring action"
+            return
         actionType = action[0]
         card = action[1]
         activeSuit = action[2]
         
         if actionType == ACTION_DRAW:
             #card, deck = drawCardFromDeck(deck)
+            print "Player ", tableState.activePlayer, " drew a card"
             tableState.playerDrawsCard(tableState.activePlayer)
         elif actionType == ACTION_PASS:
+            print "Player ", tableState.activePlayer, " passed his turn"
+            tableState.numDraws[tableState.activePlayer] == 0
             tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
         elif actionType == ACTION_PLAY:
-            tableState.playerPlaysCard(activePlayer, card, activeSuit)
+            print "Player ", tableState.activePlayer, " played ", card
+            tableState.playerPlaysCard(tableState.activePlayer, card, activeSuit)
+            tableState.numDraws[tableState.activePlayer] == 0
             tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
 
         for conn_index in range(numPlayers):
             serialized_abstract_state = json.dumps(tableState.abstractState(conn_index))
             self.callback_client_send(connections[conn_index], serialized_abstract_state)
-            #connections[conn_index].socket.send(serialized_abstract_state)
 
-        '''
-        cmd = data[0]
-        if cmd == "introduce":
-            self.add_message("Server: "+data[1]+" has joined.")
-        elif cmd == "add":
-            self.add_message(data[1])
-        elif cmd == "update":
-            pass
-        elif cmd == "leave":
-            self.add_message("Server: "+data[1]+" has left.")
-        '''
-        #self.callback_client_send(connection_object, self.chat)
     def callback_client_send      (self, connection_object, data,compression=None):
         #Something could go here
         return super(Server,self).callback_client_send(connection_object, data,compression)
@@ -133,6 +131,7 @@ class TableState:
         # TODO: shuffle when deck is empty
         card, self.deck = drawCardFromDeck(self.deck)
         self.hands[player].append(card)
+        self.numDraws[player] = self.numDraws[player] + 1
 
     def playerPlaysCard(self, player, card, activeSuit):
         self.hands[player].remove(card)
@@ -186,9 +185,7 @@ def main(argv):
     
     server = Server()
     host = socket.gethostname() # Get local machine name
-    print "before server connect"
     server.connect(host, 12345)
-    print "after server connect"
     server.accepting_allow()
     '''
     for conn_count in range(numPlayers):
