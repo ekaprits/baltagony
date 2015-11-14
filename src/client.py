@@ -18,13 +18,19 @@ PASS_BUTTON_GAP = 30
 hand_rect = pygame.Rect((0,0),(0,0))
 deck_rect = pygame.Rect((0,0),(0,0))
 pass_rect = pygame.Rect((WINDOW_WIDTH/2-30, MARGIN_GAP+CARD_HEIGHT+PASS_BUTTON_GAP), (60, 30))
+ace_rect = pygame.Rect((WINDOW_WIDTH/2-262,WINDOW_HEIGHT/2-75),(525, 150))
+win_rect = pygame.Rect((WINDOW_WIDTH/2-100,WINDOW_HEIGHT/2-150),(200, 50))
 
 cTS = None
 client_timeout_connect = 50.0
 client_timeout_receive = 100.0
+showAcePopup = False
+tempAceCard = 0
 
 class ClientTableState:
-    def __init__(self, myIndex, numPlayers, deckSize, hands, discardPile, numDraws, activePlayer, activeSuit, seven_streak):
+    def __init__(self, myIndex, numPlayers, deckSize,
+                 hands, discardPile, numDraws,
+                 activePlayer, forcedSuit, seven_streak, win_status):
         self.myIndex = myIndex
         self.numPlayers = numPlayers
         self.deckSize = deckSize
@@ -32,8 +38,9 @@ class ClientTableState:
         self.discardPile = discardPile
         self.numDraws = numDraws
         self.activePlayer = activePlayer
-        self.activeSuit = activeSuit
+        self.forcedSuit = forcedSuit
         self.seven_streak = seven_streak
+        self.win_status = win_status
         
 def readStateFromServer(client, blocking=True):
     global cTS
@@ -44,7 +51,7 @@ def readStateFromServer(client, blocking=True):
     state = json.loads(state_string)
     cTS = ClientTableState(state[0], state[1], state[2],
                             state[3], state[4], state[5],
-                            state[6], state[7], state[8])
+                            state[6], state[7], state[8], state[9])
     print "Just read state = ", state
     print "cTS.activePlayer = ", cTS.activePlayer
     print "cTS.myIndex = ", cTS.myIndex
@@ -59,7 +66,7 @@ def readStateFromServer(client, blocking=True):
 #        readStateFromServer(sock)
     
 def main(argv):
-    global cTS
+    global cTS, showAcePopup, tempAceCard
     arg_len = len(sys.argv)
     if arg_len < 3:
         print("usage: client.py <server IP> <serverPort>")
@@ -93,13 +100,15 @@ def main(argv):
                 pygame.quit()
                 sys.exit()
             elif event.type == MOUSEBUTTONUP:
+                if cTS.win_status >= 0:
+                    continue
                 if cTS.activePlayer != cTS.myIndex:
                     print "Not active player, ignoring click"
                     continue
                 pos = event.pos
                 print("Mouse click at position ", pos)
                 print deck_rect
-                if deck_rect.collidepoint(pos):
+                if (not showAcePopup) and deck_rect.collidepoint(pos):
                     print "Clicked deck"
                     if cTS.numDraws[cTS.activePlayer] < 2:
                         lst = [0,0,0]
@@ -108,7 +117,7 @@ def main(argv):
                         readStateFromServer(client, True)
                     else:
                         print "You can't draw any more. You must play or pass"
-                elif pass_rect.collidepoint(pos):
+                elif (not showAcePopup) and pass_rect.collidepoint(pos):
                     print "Clicked pass"
                     if cTS.numDraws[cTS.activePlayer] == 2:
                         lst = [1,0,0]
@@ -117,39 +126,85 @@ def main(argv):
                         readStateFromServer(client, True)
                     else:
                         print "You can't pass yet."
-                elif hand_rect.collidepoint(pos):
+                elif (not showAcePopup) and hand_rect.collidepoint(pos):
                     print "Clicked hand"
                     card_index = (pos[0]-hand_rect.left)/CARD_GAP
                     if card_index > len(cTS.hands[cTS.activePlayer])-1:
                         card_index = len(cTS.hands[cTS.activePlayer])-1
-                    card = cTS.hands[cTS.activePlayer][card_index]
-                    print "You drew index = ", card_index, " card = ", card
-                    lst = [2,card,0]
+                    hand = cTS.hands[cTS.activePlayer]
+                    norm_hand = map(normalizeCard, hand)
+                    norm_hand.sort()
+                    card = norm_hand[card_index]
+                    cardOnTop = cTS.discardPile[-1:][0]
+                    if isPlayableCard(card, cardOnTop, cTS.forcedSuit):
+                        print "You played index = ", card_index, " card = ", cardToString(card)
+                        if card % 13 > 0:   #not an ace
+                            print "Not an ace"
+                            lst = [2,card,-1]
+                            send_string = json.dumps(lst)
+                            client.send(send_string)
+                            print "Sent and waiting to hear from server"
+                            readStateFromServer(client, True)
+                            print "read state from server"
+                        else:
+                            showAcePopup = True
+                            tempAceCard = card
+                    else:
+                        print "You can't play this card! (", cardToString(card), ")"
+                elif showAcePopup and ace_rect.collidepoint(pos):
+                    print "You clicked the Ace popup"
+                    suit = (pos[0]-ace_rect.left)/(ace_rect.width/4)
+                    print "suit = ", suit
+                    lst = [2,tempAceCard,suit]
+                    showAcePopup = False
                     send_string = json.dumps(lst)
                     client.send(send_string)
                     readStateFromServer(client, True)
+                        
         # print("Updating screen")
         draw(screen)
         existsNewState = False
 
 def draw(screen):
-    global cTS
+    global cTS, showAcePopup
     screen.fill((255,255,255))
-    printAllHands(screen, cTS.hands, cTS.myIndex)
+    printAllHands(screen, cTS)
     printDiscardPile(screen, cTS.discardPile)
     printDeck(screen, cTS.deckSize)
-    printPassButton(screen)
+    if cTS.win_status >= 0:
+        printWin(screen, cTS.win_status)
+        
+    if cTS.activePlayer == cTS.myIndex and cTS.numDraws[cTS.myIndex] == 2:
+        printPassButton(screen)
+    if showAcePopup:
+        printShowAcePopup(screen)
+        
     if (cTS.activePlayer == cTS.myIndex):
-        pygame.display.set_caption("Baltagony (active)")
+        caption = "Baltagony - Player %d (active)" % (cTS.myIndex+1)
     else:
-        pygame.display.set_caption("Baltagony (inactive)")
+        caption = "Baltagony - Player %d (inactive)" % (cTS.myIndex+1)
+    pygame.display.set_caption(caption)
     pygame.display.update()
 
+def printShowAcePopup(screen):
+    global ace_rect
+    darkgray = (180, 180, 180)
+    pygame.draw.rect(screen, darkgray, ace_rect, 0)
+    pygame.draw.rect(screen, (0,0,0), ace_rect, 1)
+    suits = pygame.image.load('..\\media\\cards_gif\\suits.png')
+    screen.blit(suits, (ace_rect.left+25,ace_rect.top+25), (100,100,100,100))
+    screen.blit(suits, (ace_rect.left+150,ace_rect.top+25), (0,100,100,100))
+    screen.blit(suits, (ace_rect.left+275,ace_rect.top+25), (100,0,100,100))
+    screen.blit(suits, (ace_rect.left+400,ace_rect.top+25), (0,0,100,100))
+    
 def printPassButton(screen):
     global pass_rect
     gray = (200, 200, 200)
     pygame.draw.rect(screen, gray, pass_rect, 0)
     pygame.draw.rect(screen, (0,0,0), pass_rect, 1)
+    passfont = pygame.font.SysFont("Helvetica", 15)
+    label = passfont.render("Pass", 1, (0,0,0))
+    screen.blit(label, (pass_rect.left+13, pass_rect.top+6))
     
 def printDeck(screen, deckSize):
     global deck_rect
@@ -157,8 +212,18 @@ def printDeck(screen, deckSize):
         deck = pygame.image.load('..\\media\\cards_gif\\b1fv.gif')
         init_x = (WINDOW_WIDTH/2)-CARD_WIDTH-DECK_DISCARD_GAP
         init_y = (WINDOW_HEIGHT-CARD_HEIGHT)/2
-        deck_rect = pygame.Rect((init_x,init_y),(init_x+CARD_WIDTH,init_y+CARD_HEIGHT))
+        deck_rect = pygame.Rect((init_x,init_y),(CARD_WIDTH,CARD_HEIGHT))
         screen.blit(deck, (init_x,init_y))
+
+def printWin(screen, win_status):
+    global win_rect
+    darkgray = (180, 180, 180)
+    pygame.draw.rect(screen, darkgray, win_rect, 0)
+    pygame.draw.rect(screen, (0,0,0), win_rect, 1)
+    winfont = pygame.font.SysFont("Helvetica", 22)
+    winstring = "Player %d wins!" % (win_status+1)
+    label = winfont.render(winstring, 1, (0,0,0))
+    screen.blit(label, (win_rect.left+30, win_rect.top+12))
     
 def printDiscardPile(screen, discardPile):
     cardOnTop = discardPile[-1:][0]
@@ -168,9 +233,13 @@ def printDiscardPile(screen, discardPile):
     init_y = (WINDOW_HEIGHT-CARD_HEIGHT)/2
     screen.blit(image, (init_x,init_y))
 
-def printAllHands(screen, hands, myIndex):
-    printMyHand(screen, hands[myIndex])
-    
+def printAllHands(screen, cTS):
+    hands = cTS.hands
+    myIndex = cTS.myIndex
+    forcedSuit = cTS.forcedSuit
+    discardPile = cTS.discardPile
+    activePlayer = cTS.activePlayer
+    printMyHand(screen, hands[myIndex], discardPile, forcedSuit, myIndex, activePlayer)
     for i in range(len(hands)-1):
         offset = 0
         nextIndex = (myIndex + 1 + i) % len(hands)
@@ -192,30 +261,65 @@ def printAllHands(screen, hands, myIndex):
             screen.blit(cardBack, (init_x+offset,init_y))
             offset += CARD_GAP
             
-def printMyHand(screen, hand):
+def printMyHand(screen, hand, discardPile, forcedSuit, myIndex, activePlayer):
     global hand_rect
     estimated_width = CARD_WIDTH + ((len(hand)-1)*CARD_GAP)
     init_x =(WINDOW_WIDTH-estimated_width)/2
     init_y = 50
     hand_rect = pygame.Rect((init_x, init_y),(estimated_width,CARD_HEIGHT))
-    #pygame.draw.rect(screen, (0,0,0), hand_rect, 3)
+    #pygame.draw.rect(screen, (0,0,0), hand_rect, 2)
     offset = 0
-    for card in hand:
-        imageFile = getFilenameFromCardNumber(card)
+    #print hand
+    cardOnTop = discardPile[-1:][0]
+    norm_hand = [None]*len(hand)
+    for i in range(len(hand)):
+        norm_hand[i] = hand[i]%52
+    #print norm_hand
+    norm_hand.sort()
+    #print norm_hand
+    for card in norm_hand:
+        #print "card = ", card
+        isPlayable = isPlayableCard(card, cardOnTop, forcedSuit) and myIndex == activePlayer
+        imageFile = getFilenameFromCardNumber(card,isPlayable)
         myvar = pygame.image.load('..\\media\\cards_gif\\'+imageFile)
         screen.blit(myvar, (init_x+offset,init_y))
         offset += CARD_GAP
         #print(imageFile)
         
-        
-def getFilenameFromCardNumber(card):
+def isPlayableCard(card, cardOnTop, forcedSuit):
+    cardSuit = (card % 52)/13
+    cardNumber = card % 13
+    cardOnTopSuit = (cardOnTop % 52)/13
+    cardOnTopNumber = cardOnTop % 13
+    if forcedSuit < 0 and cardOnTopNumber == 0: # this means an Ace as a starting discard
+        return cardNumber != 0
+    elif forcedSuit >= 0:   # an Ace played during game
+        return cardNumber != 0 and cardSuit == forcedSuit
+    else:                   # no Ace on top
+        return cardNumber == cardOnTopNumber or cardSuit == cardOnTopSuit or cardNumber == 0
+
+def getFilenameFromCardNumber(card, isPlayable=True):
     suit = suits[int(card%52/13)]
     number = card % 13
     if number > 9:
         strnumber = facecards[number - 10]
     else:
         strnumber = str(number+1)
-    return suit + strnumber + ".gif"
+    if isPlayable:
+        dark = ""
+    else:
+        dark = "_dark"
+    return suit + strnumber + dark + ".gif"
 
+def normalizeCard(card):
+    return card % 52
+
+def cardToString(card):
+    global suits
+    norm_card = normalizeCard(card)
+    norm_cardNum = str(norm_card % 13)
+    norm_cardSuit = suits[(norm_card / 13)]
+    return norm_cardNum+norm_cardSuit
+    
 if __name__ == "__main__":
     main(sys.argv)

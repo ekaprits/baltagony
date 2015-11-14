@@ -17,16 +17,8 @@ class Server(MastermindServerTCP):
     def __init__(self):
         MastermindServerTCP.__init__(self, 0.5,0.5,100.0) #server refresh, connections' refresh, connection timeout
 
-        #self.chat = [None]*scrollback
         self.mutex = threading.Lock()
-        '''
-        def add_message(self, msg):
-        timestamp = strftime("%H:%M:%S",gmtime())
-
-        self.mutex.acquire()
-        self.chat = self.chat[1:] + [timestamp+" | "+msg]
-        self.mutex.release()
-        '''
+        
     def callback_connect          (self                                          ):
         print "Server connecting"
         return super(Server,self).callback_connect()
@@ -35,9 +27,9 @@ class Server(MastermindServerTCP):
         return super(Server,self).callback_disconnect()
     def callback_connect_client   (self, connection_object                       ):
         global numConnections, connections, numPlayers, tableState
-        #self.mutex.acquire()
-        #if numConnections > numPlayers:
-        #    return super(Server,self).callback_connect_client(connection_object)
+        self.mutex.acquire()
+        if numConnections > numPlayers:
+            return super(Server,self).callback_connect_client(connection_object)
         
         connections[numConnections] = connection_object
 
@@ -45,20 +37,19 @@ class Server(MastermindServerTCP):
             
         serialized_abstract_state = json.dumps(tableState.abstractState(numConnections))
         print serialized_abstract_state
-        #connections[conn_index].socket.send([serialized_abstract_state])
+        
         self.callback_client_send(connection_object, serialized_abstract_state)
         numConnections = numConnections + 1
         #if numConnections == numPlayers:
         #    self.accepting_disallow()
         
-        #self.mutex.release()
+        self.mutex.release()
         return super(Server,self).callback_connect_client(connection_object)
     def callback_disconnect_client(self, connection_object                       ):
         #Something could go here
         return super(Server,self).callback_disconnect_client(connection_object)
 
     def callback_client_receive   (self, connection_object                       ):
-        #print "Received something from the client"
         return super(Server,self).callback_client_receive(connection_object)
     def callback_client_handle    (self, connection_object, data                 ):
         global numConnections, connections, numPlayers, tableState
@@ -71,7 +62,7 @@ class Server(MastermindServerTCP):
             return
         actionType = action[0]
         card = action[1]
-        activeSuit = action[2]
+        forcedSuit = action[2]
         
         if actionType == ACTION_DRAW:
             #card, deck = drawCardFromDeck(deck)
@@ -79,13 +70,19 @@ class Server(MastermindServerTCP):
             tableState.playerDrawsCard(tableState.activePlayer)
         elif actionType == ACTION_PASS:
             print "Player ", tableState.activePlayer, " passed his turn"
-            tableState.numDraws[tableState.activePlayer] == 0
+            tableState.numDraws[tableState.activePlayer] = 0
             tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
         elif actionType == ACTION_PLAY:
             print "Player ", tableState.activePlayer, " played ", card
-            tableState.playerPlaysCard(tableState.activePlayer, card, activeSuit)
-            tableState.numDraws[tableState.activePlayer] == 0
-            tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
+            tableState.playerPlaysCard(tableState.activePlayer, card, forcedSuit)
+            tableState.numDraws[tableState.activePlayer] = 0
+            if len(tableState.hands[tableState.activePlayer]) == 0:
+                tableState.win_status = tableState.activePlayer
+                tableState.activePlayer = -1
+            elif card % 13 == 8:  # a 9 skips next player
+                tableState.activePlayer = (tableState.activePlayer+2)%numPlayers
+            elif card % 13 != 7:   # with an 8, you play again 
+                tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
 
         for conn_index in range(numPlayers):
             serialized_abstract_state = json.dumps(tableState.abstractState(conn_index))
@@ -96,16 +93,18 @@ class Server(MastermindServerTCP):
         return super(Server,self).callback_client_send(connection_object, data,compression)
 
 class TableState:
-    def __init__(self, numPlayers, deck, hands, discardPile, numDraws, activePlayer, activeSuit, seven_streak):
+    def __init__(self, numPlayers, deck, hands,
+                 discardPile, numDraws, activePlayer,
+                 forcedSuit, seven_streak, win_status):
         self.numPlayers = numPlayers
-        #self.initHandSize = initHandSize
         self.deck = deck
         self.hands = hands
         self.discardPile = discardPile
         self.numDraws = numDraws
         self.activePlayer = activePlayer
-        self.activeSuit = activeSuit
+        self.forcedSuit = forcedSuit
         self.seven_streak = seven_streak
+        self.win_status = win_status
 
     def abstractHands(self, player):
         newlist = []
@@ -124,8 +123,9 @@ class TableState:
                 self.discardPile,
                 self.numDraws,
                 self.activePlayer,
-                self.activeSuit,
-                self.seven_streak]
+                self.forcedSuit,
+                self.seven_streak,
+                self.win_status]
 
     def playerDrawsCard(self, player):
         # TODO: shuffle when deck is empty
@@ -133,11 +133,15 @@ class TableState:
         self.hands[player].append(card)
         self.numDraws[player] = self.numDraws[player] + 1
 
-    def playerPlaysCard(self, player, card, activeSuit):
+    def playerPlaysCard(self, player, card, forcedSuit):
+        if card not in self.hands[player]:
+            card = card+52
         self.hands[player].remove(card)
         self.discardPile.append(card)
         if(card % 13 == 0):
-            self.activeSuit == activeSuit
+            self.forcedSuit = forcedSuit
+        else:
+            self.forcedSuit = -1
         
         
 def main(argv):
@@ -170,7 +174,7 @@ def main(argv):
     discardPile = [card]
 
     numDraws = [0] * numPlayers
-    tableState = TableState(numPlayers, deck, hands, discardPile, numDraws, 0, 0, 0)
+    tableState = TableState(numPlayers, deck, hands, discardPile, numDraws, 0, -1, 0, -1)
     print tableState.hands
     print tableState.deck 
     print tableState.discardPile 
@@ -186,52 +190,16 @@ def main(argv):
     server = Server()
     host = socket.gethostname() # Get local machine name
     server.connect(host, 12345)
-    server.accepting_allow()
-    '''
-    for conn_count in range(numPlayers):
-        remaining = numPlayers-conn_count
-        print('Waiting for ', remaining, ' more connections')
-        c, addr = s.accept()     # Establish connection with client.
-        print('Got connection from', addr)
-        connections.append([c, addr])
-    
-    while numConnections < numPlayers:
+    try:
+        server.accepting_allow_wait_forever()
+    except:
+        #Only way to break is with an exception
         pass
-    
-    print("All players connected!")
-    for conn_index in range(numPlayers):
-        serialized_abstract_state = json.dumps(tableState.abstractState(conn_index))
-        print serialized_abstract_state
-        connections[conn_index].socket.send([serialized_abstract_state])
-    
-    print("All hands sent")
-    
-    while True:
-        print("Waiting for player action")
-        action_string = connections[tableState.activePlayer].socket.recv(128)
-        action = json.loads(action_string)
-        print("Received player action ", action)
-        actionType = action[0]
-        card = action[1]
-        activeSuit = action[2]
-        
-        if actionType == ACTION_DRAW:
-            #card, deck = drawCardFromDeck(deck)
-            tableState.playerDrawsCard(tableState.activePlayer)
-        elif actionType == ACTION_PASS:
-            tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
-        elif actionType == ACTION_PLAY:
-            tableState.playerPlaysCard(activePlayer, card, activeSuit)
-            tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
+    server.accepting_disallow()
+    server.disconnect_clients()
+    server.disconnect()
 
-        for conn_index in range(numPlayers):
-            serialized_abstract_state = json.dumps(tableState.abstractState(conn_index))
-            connections[conn_index].socket.send(serialized_abstract_state)
-        
-        #c.send('Thank you for connecting')
-        #c.close()                # Close the connection
-    '''
-
+    
 # naive implementation of draw.
 # TODO: if deck is empty, reshuffle discard pile into deck
 def drawCardFromDeck(deck):
