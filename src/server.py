@@ -7,6 +7,7 @@ from Mastermind import *
 ACTION_DRAW = 0
 ACTION_PASS = 1
 ACTION_PLAY = 2
+ACTION_CONCEDE_DRAW = 3
 
 connections = []
 numConnections = 0
@@ -68,10 +69,12 @@ class Server(MastermindServerTCP):
             #card, deck = drawCardFromDeck(deck)
             print "Player ", tableState.activePlayer, " drew a card"
             tableState.playerDrawsCard(tableState.activePlayer)
+            tableState.seven_streak = 0
         elif actionType == ACTION_PASS:
             print "Player ", tableState.activePlayer, " passed his turn"
             tableState.numDraws[tableState.activePlayer] = 0
             tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
+            tableState.seven_streak = 0
         elif actionType == ACTION_PLAY:
             print "Player ", tableState.activePlayer, " played ", card
             tableState.playerPlaysCard(tableState.activePlayer, card, forcedSuit)
@@ -79,11 +82,22 @@ class Server(MastermindServerTCP):
             if len(tableState.hands[tableState.activePlayer]) == 0:
                 tableState.win_status = tableState.activePlayer
                 tableState.activePlayer = -1
+            elif card % 13 == 6:  # card is a 7
+                tableState.seven_streak = tableState.seven_streak + 1
+                tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
             elif card % 13 == 8:  # a 9 skips next player
                 tableState.activePlayer = (tableState.activePlayer+2)%numPlayers
+                tableState.seven_streak = 0
             elif card % 13 != 7:   # with an 8, you play again 
                 tableState.activePlayer = (tableState.activePlayer+1)%numPlayers
-
+                tableState.seven_streak = 0
+        elif actionType == ACTION_CONCEDE_DRAW:
+            print "Player ", tableState.activePlayer, " concedes draw"
+            numCardsToDraw = 2*tableState.seven_streak
+            for i in range(numCardsToDraw):
+                tableState.playerDrawsCard(tableState.activePlayer,False)
+            tableState.seven_streak = 0
+            
         for conn_index in range(numPlayers):
             serialized_abstract_state = json.dumps(tableState.abstractState(conn_index))
             self.callback_client_send(connections[conn_index], serialized_abstract_state)
@@ -127,11 +141,20 @@ class TableState:
                 self.seven_streak,
                 self.win_status]
 
-    def playerDrawsCard(self, player):
+    def playerDrawsCard(self, player, countsForNumDraws=True):
         # TODO: shuffle when deck is empty
+        if len(self.deck)==0:
+            print "Deck is empty. Shuffling all but the top card of discard pile into deck."
+            cardOnTopList = self.discardPile[-1:]
+            rest = self.discardPile[:-1]
+            shuffle(rest)
+            self.deck = rest
+            self.discardPile = cardOnTopList
+            
         card, self.deck = drawCardFromDeck(self.deck)
         self.hands[player].append(card)
-        self.numDraws[player] = self.numDraws[player] + 1
+        if countsForNumDraws:
+            self.numDraws[player] = self.numDraws[player] + 1
 
     def playerPlaysCard(self, player, card, forcedSuit):
         if card not in self.hands[player]:
